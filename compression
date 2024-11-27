@@ -1,0 +1,317 @@
+import os
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from tensorflow.keras.preprocessing.image import load_img, img_to_array, ImageDataGenerator
+from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, UpSampling2D, concatenate, Activation, Multiply, BatchNormalization, Dropout, add
+from tensorflow.keras.models import Model
+from sklearn.model_selection import train_test_split
+import tensorflow.keras.backend as K
+from tensorflow.keras.optimizers import Adam
+from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
+import tensorflow as tf
+
+# Paths to the dataset
+dataset_path = '/content/drive/MyDrive/DATALESS2'
+mri_path = os.path.join(dataset_path, '/content/drive/MyDrive/DATALESS2/image')
+mask_path = os.path.join(dataset_path, '/content/drive/MyDrive/DATALESS2/mask')
+
+# Load and preprocess images
+def load_images(image_path):
+    images = []
+    for img_name in sorted(os.listdir(image_path)):
+        img = load_img(os.path.join(image_path, img_name), color_mode='grayscale')
+        img = img_to_array(img) / 255.0
+        images.append(img)
+    return np.array(images)
+
+mri_images = load_images(mri_path)
+mask_images = load_images(mask_path)
+
+print(f'MRI images shape: {mri_images.shape}')
+print(f'Mask images shape: {mask_images.shape}')
+
+# Split the data into training and testing sets
+x_train, x_test, y_train, y_test = train_test_split(mri_images, mask_images, test_size=0.2, random_state=42)
+
+# Data Augmentation
+datagen = ImageDataGenerator(
+    rotation_range=30,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    zoom_range=0.3,
+    horizontal_flip=True
+)
+
+# Augment the training data
+datagen.fit(x_train)
+def attention_block(x, g, inter_channel):
+    theta_x = Conv2D(inter_channel, (2, 2), strides=(2, 2), padding='same')(x)
+    phi_g = Conv2D(inter_channel, (1, 1), padding='same')(g)
+
+    # Upsample theta_x to match phi_g's spatial dimensions
+    theta_x = UpSampling2D(size=(2, 2))(theta_x)
+
+    f = Activation('relu')(theta_x + phi_g)
+    psi_f = Conv2D(1, (1, 1), padding='same')(f)
+    rate = Activation('sigmoid')(psi_f)
+    att_x = Multiply()([x, rate])
+    return att_x
+
+def improved_attention_unet(input_size=(256, 256, 1)):
+    inputs = Input(input_size)
+
+    def residual_block(x, filters):
+        res = Conv2D(filters, 3, padding='same')(x)
+        res = BatchNormalization()(res)
+        res = Activation('relu')(res)
+        res = Conv2D(filters, 3, padding='same')(res)
+        res = BatchNormalization()(res)
+        res = add([res, x])
+        return res
+
+    def conv_block(x, filters):
+        x = Conv2D(filters, 3, activation='relu', padding='same')(x)
+        x = BatchNormalization()(x)
+        x = Dropout(0.3)(x)
+        x = Conv2D(filters, 3, activation='relu', padding='same')(x)
+        x = BatchNormalization()(x)
+        return x
+
+    conv1 = conv_block(inputs, 64)
+    pool1 = MaxPooling2D(pool_size=(2, 2))(conv1)
+
+    conv2 = conv_block(pool1, 128)
+    pool2 = MaxPooling2D(pool_size=(2, 2))(conv2)
+
+    conv3 = conv_block(pool2, 256)
+    pool3 = MaxPooling2D(pool_size=(2, 2))(conv3)
+
+    conv4 = conv_block(pool3, 512)
+    pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
+
+    conv5 = conv_block(pool4, 1024)
+
+    up6 = UpSampling2D(size=(2, 2))(conv5)
+    att6 = attention_block(conv4, up6, 512)
+    merge6 = concatenate([att6, up6], axis=3)
+    conv6 = conv_block(merge6, 512)
+
+    up7 = UpSampling2D(size=(2, 2))(conv6)
+    att7 = attention_block(conv3, up7, 256)
+    merge7 = concatenate([att7, up7], axis=3)
+    conv7 = conv_block(merge7, 256)
+
+    up8 = UpSampling2D(size=(2, 2))(conv7)
+    att8 = attention_block(conv2, up8, 128)
+    merge8 = concatenate([att8, up8], axis=3)
+    conv8 = conv_block(merge8, 128)
+
+    up9 = UpSampling2D(size=(2, 2))(conv8)
+    att9 = attention_block(conv1, up9, 64)
+    merge9 = concatenate([att9, up9], axis=3)
+    conv9 = conv_block(merge9, 64)
+
+    conv10 = Conv2D(1, 1, activation='sigmoid')(conv9)
+
+    model = Model(inputs, conv10)
+    return model
+
+# Create and compile the improved model
+improved_model = improved_attention_unet()
+improved_model.compile(optimizer=Adam(learning_rate=0.0001), loss='binary_crossentropy', metrics=['accuracy'])
+improved_model.summary()
+# Train the improved model with augmented data
+history = improved_model.fit(datagen.flow(x_train, y_train, batch_size=8), epochs=40, validation_data=(x_test, y_test))
+
+# Plot training & validation loss values
+plt.figure()
+plt.plot(history.history['loss'])
+plt.plot(history.history['val_loss'])
+plt.title('Improved Attention U-Net Model Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend(['Train', 'Validation'], loc='upper right')
+plt.grid(True)
+plt.show()
+import os
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Flatten, Reshape, Conv2D, MaxPooling2D, UpSampling2D, concatenate, BatchNormalization, Dropout
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.preprocessing.image import load_img, img_to_array, ImageDataGenerator
+from sklearn.model_selection import train_test_split
+import tensorflow.keras.backend as K
+from skimage.metrics import mean_squared_error, peak_signal_noise_ratio, structural_similarity
+# Autoencoder model with combined loss function
+def combined_loss(y_true, y_pred):
+    ssim_loss = 1 - tf.reduce_mean(tf.image.ssim(y_true, y_pred, max_val=1.0))
+    bce_loss = K.binary_crossentropy(y_true, y_pred)
+    return bce_loss + ssim_loss
+
+# Define the autoencoder with skip connections
+input_img = Input(shape=(256, 256, 1))
+
+# Encoder
+x1 = Conv2D(32, (3, 3), activation='relu', padding='same')(input_img)
+p1 = MaxPooling2D((2, 2), padding='same')(x1)
+
+x2 = Conv2D(64, (3, 3), activation='relu', padding='same')(p1)
+p2 = MaxPooling2D((2, 2), padding='same')(x2)
+
+x3 = Conv2D(128, (3, 3), activation='relu', padding='same')(p2)
+p3 = MaxPooling2D((2, 2), padding='same')(x3)
+
+# Bottleneck
+flat = Flatten()(p3)
+encoded = Dense(256, activation='relu')(flat)
+
+# Decoder
+dense_decoded = Dense(32 * 32 * 128, activation='relu')(encoded)
+reshaped = Reshape((32, 32, 128))(dense_decoded)
+
+u1 = UpSampling2D((2, 2))(reshaped)
+c1 = Conv2D(128, (3, 3), activation='relu', padding='same')(u1)
+merge1 = concatenate([c1, x3])
+
+u2 = UpSampling2D((2, 2))(merge1)
+c2 = Conv2D(64, (3, 3), activation='relu', padding='same')(u2)
+merge2 = concatenate([c2, x2])
+
+u3 = UpSampling2D((2, 2))(merge2)
+c3 = Conv2D(32, (3, 3), activation='relu', padding='same')(u3)
+merge3 = concatenate([c3, x1])
+
+decoded = Conv2D(1, (3, 3), activation='sigmoid', padding='same')(merge3)
+
+# Autoencoder model
+autoencoder = Model(input_img, decoded)
+autoencoder.compile(optimizer=Adam(learning_rate=0.0001), loss=combined_loss)
+autoencoder.summary()
+
+# Train the autoencoder
+non_roi_regions = x_train * (1 - y_train)
+non_roi_regions_test = x_test * (1 - y_test)
+autoencoder_history = autoencoder.fit(non_roi_regions, non_roi_regions, epochs=50, batch_size=8, validation_data=(non_roi_regions_test, non_roi_regions_test))
+
+# Plot training & validation loss values for autoencoder
+plt.figure()
+plt.plot(autoencoder_history.history['loss'])
+plt.plot(autoencoder_history.history['val_loss'])
+plt.title('Autoencoder Model Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.legend(['Train', 'Validation'], loc='upper right')
+plt.grid(True)
+plt.show()
+# Predict non-ROI regions using the autoencoder
+compressed_non_roi = autoencoder.predict(non_roi_regions_test)
+
+# Combine ROI and compressed non-ROI regions
+binary_masks = (improved_model.predict(x_test) > 0.5).astype(np.uint8)
+final_images = (x_test * binary_masks) + (compressed_non_roi * (1 - binary_masks))
+
+# Save and display the output images
+output_dir = 'compressed_output'
+os.makedirs(output_dir, exist_ok=True)
+
+for i, img in enumerate(final_images):
+    output_path = os.path.join(output_dir, f'compressed_{i}.png')
+    cv2.imwrite(output_path, img * 255)
+
+    plt.figure()
+    plt.imshow(img.squeeze(), cmap='gray')
+    plt.title(f'Compressed Image {i}')
+    plt.show()
+
+# Calculate evaluation metrics for the final images
+mse_values = []
+psnr_values = []
+ssim_values = []
+
+for original, compressed in zip(x_test, final_images):
+    mse = mean_squared_error(original.squeeze(), compressed.squeeze())
+    psnr = peak_signal_noise_ratio(original.squeeze(), compressed.squeeze(), data_range=1)
+    ssim = structural_similarity(original.squeeze(), compressed.squeeze(), data_range=1)
+
+    mse_values.append(mse)
+    psnr_values.append(psnr)
+    ssim_values.append(ssim)
+
+print(f'MSE: {np.mean(mse_values)}')
+print(f'PSNR: {np.mean(psnr_values)}')
+print(f'SSIM: {np.mean(ssim_values)}')
+
+# Plot evaluation metrics
+plt.figure()
+plt.plot(mse_values, label='MSE')
+plt.plot(psnr_values, label='PSNR')
+plt.plot(ssim_values, label='SSIM')
+plt.title('Evaluation Metrics')
+plt.xlabel('Image Index')
+plt.ylabel('Metric Value')
+plt.legend(loc='upper right')
+plt.grid(True)
+plt.show()
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage.metrics import structural_similarity as ssim, peak_signal_noise_ratio as psnr, mean_squared_error as mse
+import os
+
+# Function to load and resize an image to 256x256
+def load_and_resize_image(image_path, size=(256, 256)):
+    image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    resized_image = cv2.resize(image, size)
+    return resized_image
+
+# Function to calculate the compression metrics
+def calculate_compression_metrics(original_image_path, compressed_image_path, original_image, compressed_image):
+    original_size = os.path.getsize(original_image_path)
+    compressed_size = os.path.getsize(compressed_image_path)
+    compression_ratio = original_size / compressed_size
+    compression_percentage = (1 - compressed_size / original_size) * 100
+    ssim_value = ssim(original_image, compressed_image, multichannel=True)
+    psnr_value = psnr(original_image, compressed_image)
+    mse_value = mse(original_image, compressed_image)
+
+    return compression_ratio, compression_percentage, ssim_value, psnr_value, mse_value
+SS
+# Function to plot the original and compressed images
+def plot_images(original_image, compressed_image):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    axes[0].imshow(cv2.cvtColor(original_image, cv2.COLOR_BGR2RGB))
+    axes[0].set_title("Original Image")
+    axes[0].axis("off")
+
+    axes[1].imshow(cv2.cvtColor(compressed_image, cv2.COLOR_BGR2RGB))
+    axes[1].set_title("Compressed Image")
+    axes[1].axis("off")
+
+    plt.show()
+
+# Main function to execute the tasks
+def main(original_image_path, compressed_image_path):
+    original_image = load_and_resize_image(original_image_path)
+    compressed_image = load_and_resize_image(compressed_image_path)
+
+    compression_ratio, compression_percentage, ssim_value, psnr_value, mse_value = calculate_compression_metrics(original_image_path, compressed_image_path, original_image, compressed_image)
+
+    print(f"Compression Ratio: {compression_ratio:.2f}")
+    print(f"Compression Percentage: {compression_percentage:.2f}%")
+    #print(f"SSIM: {ssim_value:.4f}")
+    #print(f"PSNR: {psnr_value:.2f} dB")
+    #print(f"MSE: {mse_value:.2f}")
+
+    plot_images(original_image, compressed_image)
+
+# Replace 'original.jpg' and 'compressed.jpg' with your image paths
+original_image_path = '/content/drive/MyDrive/img/TCGA_CS_4942_19970222_13 (1).tif'
+compressed_image_path = '/content/drive/MyDrive/img/TCGA_CS_4942_19970222_13.tif'
+
+main(original_image_path, compressed_image_path)
+
+
